@@ -25,9 +25,12 @@
 
 package org.jetbrains.projector.server.idea
 
+import com.intellij.openapi.application.invokeAndWaitIfNeeded
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.editor.impl.EditorImpl
 import com.intellij.openapi.editor.impl.view.EditorView
+import com.intellij.openapi.editor.markup.TextAttributes
 import org.jetbrains.projector.awt.PWindow
 import org.jetbrains.projector.awt.peer.PComponentPeer
 import org.jetbrains.projector.common.protocol.data.CommonRectangle
@@ -35,6 +38,8 @@ import org.jetbrains.projector.common.protocol.data.Point
 import org.jetbrains.projector.common.protocol.toClient.ServerCaretInfoChangedEvent
 import org.jetbrains.projector.common.protocol.toClient.data.idea.CaretInfo
 import org.jetbrains.projector.server.core.ij.invokeWhenIdeaIsInitialized
+import org.jetbrains.projector.server.platform.getTextAttributesCompat
+import org.jetbrains.projector.server.platform.readAction
 import org.jetbrains.projector.server.util.FontCacher
 import org.jetbrains.projector.util.loading.unprotect
 import org.jetbrains.projector.util.logging.Logger
@@ -155,6 +160,8 @@ class CaretInfoUpdater(private val onCaretInfoChanged: (ServerCaretInfoChangedEv
           scrollPane.verticalScrollBar?.width ?: 0
         else 0
 
+        val textColor = getTextColorBeforeCaret(focusedEditor)
+
         ServerCaretInfoChangedEvent.CaretInfoChange.Carets(
           points,
           fontId = FontCacher.getId(editorFont),
@@ -170,9 +177,80 @@ class CaretInfoUpdater(private val onCaretInfoChanged: (ServerCaretInfoChangedEv
           lineHeight = lineHeight,
           lineDescent = lineDescent,
           scrollBarWidth = scrollBarWidth,
+          textColor = textColor,
         )
       }
     }
+  }
+
+  private fun getTextColorBeforeCaret(editor: EditorEx): Int {
+    val attrs = getTextAttributesBeforeCaret(editor) { it.foregroundColor != null }
+    val color = attrs?.foregroundColor ?: editor.colorsScheme.defaultForeground
+    return color.rgb
+  }
+
+  private fun getTextAttributesBeforeCaret(editor: EditorEx, filter: (TextAttributes) -> Boolean): TextAttributes? {
+
+    val caretOffset = readAction { editor.caretModel.offset }
+
+    if (caretOffset <= 0) return null
+
+    var bestFitAttributes: ExtendedTextAttributes? = null
+    val compareAndUpdate = lambda@ { extendedTextAttributes: ExtendedTextAttributes ->
+      if (!filter(extendedTextAttributes.attrs)) return@lambda
+
+      bestFitAttributes = ExtendedTextAttributes.topLayeredAttributes(extendedTextAttributes, bestFitAttributes)
+    }
+
+    val highlightingProviders = listOf(::getAttrsFromRangeHighlighters, ::getAttrsFromHighlighterIterator)
+
+    highlightingProviders.forEach {
+      it(editor, caretOffset, compareAndUpdate)
+    }
+
+    return bestFitAttributes?.attrs
+  }
+
+  private fun getAttrsFromRangeHighlighters(
+    editor: EditorEx,
+    caretOffset: Int,
+    compareAndUpdate: (ExtendedTextAttributes) -> Unit,
+  ) {
+
+    val rangeHighlighters = invokeAndWaitIfNeeded { editor.filteredDocumentMarkupModel.allHighlighters }
+
+    val startPos = caretOffset - 1
+
+    rangeHighlighters.forEach {
+      val start = it.startOffset
+      val end = it.endOffset
+
+      if (startPos !in start until end) return@forEach
+
+      val textAttrs = it.getTextAttributesCompat(editor.colorsScheme) ?: return@forEach
+
+      compareAndUpdate(ExtendedTextAttributes(textAttrs, start until end, it.layer))
+    }
+  }
+
+  private fun getAttrsFromHighlighterIterator(
+    editor: EditorEx,
+    caretOffset: Int,
+    compareAndUpdate: (ExtendedTextAttributes) -> Unit,
+  ) {
+
+    val startPos = caretOffset - 1
+
+    val highlightIterator = readAction { editor.highlighter.createIterator(startPos) }
+    if (highlightIterator.atEnd()) return
+
+    do {
+      val candidateAttrs = highlightIterator.textAttributes
+      val range = highlightIterator.start until highlightIterator.end
+      compareAndUpdate(ExtendedTextAttributes(candidateAttrs, range, -1))
+
+      highlightIterator.advance()
+    } while (!highlightIterator.atEnd() && startPos in highlightIterator.start until highlightIterator.end)
   }
 
   fun start() {
