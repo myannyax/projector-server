@@ -26,8 +26,8 @@
 package org.jetbrains.projector.server.idea
 
 import com.intellij.openapi.application.invokeAndWaitIfNeeded
+import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.ex.EditorEx
-import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.editor.impl.EditorImpl
 import com.intellij.openapi.editor.impl.view.EditorView
 import com.intellij.openapi.editor.markup.TextAttributes
@@ -45,6 +45,7 @@ import org.jetbrains.projector.util.loading.unprotect
 import org.jetbrains.projector.util.logging.Logger
 import sun.awt.AWTAccessor
 import java.awt.Component
+import java.awt.Font
 import java.awt.peer.ComponentPeer
 import java.lang.reflect.Field
 import kotlin.concurrent.thread
@@ -105,7 +106,6 @@ class CaretInfoUpdater(private val onCaretInfoChanged: (ServerCaretInfoChangedEv
   }
 
   private fun loadCaretInfo(): ServerCaretInfoChangedEvent.CaretInfoChange {
-    val editorFont = EditorUtil.getEditorFont()
 
     val focusedCaretBlinkingCommand = ourCaretBlinkingCommandField.get(null)
     val focusedEditor = myEditorField.get(focusedCaretBlinkingCommand) as EditorImpl
@@ -161,6 +161,7 @@ class CaretInfoUpdater(private val onCaretInfoChanged: (ServerCaretInfoChangedEv
         else 0
 
         val textColor = getTextColorBeforeCaret(focusedEditor)
+        val editorFont = getFontBeforeCaret(focusedEditor)
 
         ServerCaretInfoChangedEvent.CaretInfoChange.Carets(
           points,
@@ -187,6 +188,19 @@ class CaretInfoUpdater(private val onCaretInfoChanged: (ServerCaretInfoChangedEv
     val attrs = getTextAttributesBeforeCaret(editor) { it.foregroundColor != null }
     val color = attrs?.foregroundColor ?: editor.colorsScheme.defaultForeground
     return color.rgb
+  }
+
+  private fun getFontBeforeCaret(editor: EditorEx): Font {
+    val attrs = getTextAttributesBeforeCaret(editor) { it.fontType != Font.PLAIN }
+
+    val editorFontType = when (attrs?.fontType ?: Font.PLAIN) {
+      Font.BOLD -> EditorFontType.BOLD
+      Font.ITALIC -> EditorFontType.ITALIC
+      Font.BOLD or Font.ITALIC -> EditorFontType.BOLD_ITALIC
+      else -> EditorFontType.PLAIN
+    }
+
+    return editor.colorsScheme.getFont(editorFontType)
   }
 
   private fun getTextAttributesBeforeCaret(editor: EditorEx, filter: (TextAttributes) -> Boolean): TextAttributes? {
