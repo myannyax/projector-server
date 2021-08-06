@@ -144,7 +144,7 @@ class PGraphics2D private constructor(
     device = component.graphicsConfiguration.device
   )
 
-  private constructor(
+  constructor(
     drawEventQueue: DrawEventQueue,
     transform: AffineTransform,
     backgroundColor: Color?,
